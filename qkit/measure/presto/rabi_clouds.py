@@ -38,8 +38,10 @@ class RabiCloud(Base):
             'readout_amp' : 0.1,
             'control_amp_arr' : [0.1],
             'readout_duration' : 500e-9,
+            'readout_phase' : 0,
             'control_duration' : 200e-9,
             'match_duration' : 300e-9,
+            'number_of_match': 1,
             'readout_port' : 1,
             'control_port' : 3,
             'sample_port' : 1,
@@ -143,8 +145,8 @@ class RabiCloud(Base):
                 output_port=self.readout_port,
                 group=0,
                 duration=self.readout_duration,
-                amplitude=1.0,
-                amplitude_q=1.0,
+                amplitude=1.0*np.exp(1j*self.readout_phase) ,
+                #amplitude_q = np.imag( ),
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
@@ -170,6 +172,15 @@ class RabiCloud(Base):
                 template1=templ_i,
                 template2=templ_q,
                 )
+            dict_pulses = {}
+            dict_pulses[0] = [match_i, match_q]
+            if self.number_of_match>1:
+                match_i_2, match_q_2 = pls.setup_template_matching_pair(
+                    input_port=self.sample_port,
+                    template1=templ_i,
+                    template2=templ_q,
+                    )
+                dict_pulses[1] = [match_i_2, match_q_2]
             
             
             # ******************************
@@ -184,9 +195,11 @@ class RabiCloud(Base):
           
             pls.reset_phase(T, self.readout_port)
             pls.output_pulse(T, readout_pulse)
-            pls.match(T + self.readout_match_delay, [match_i, match_q])
+            T += self.control_duration
+            for i in range(self.number_of_match):
+                pls.match(T + self.readout_match_delay+i*self.match_duration, dict_pulses[i%2])
             
-            T += self.readout_duration
+            T += self.number_of_match*self.readout_duration
             pls.next_scale(T, self.control_port ) 
             
             # Wait for decay
@@ -219,8 +232,20 @@ class RabiCloud(Base):
                 print_time=print_time,
             )
 #             self.t_arr, self.store_arr = pls.get_store_data()
-            self.match_arr = pls.get_template_matching_data([match_i, match_q])
-            
+            match_arr_0 = np.array(pls.get_template_matching_data(dict_pulses[0]))
+            if self.number_of_match>1:
+                match_arr_1 = np.array(pls.get_template_matching_data(dict_pulses[1]))
+                
+                
+                N1 = self.number_of_match//2
+                N2 = self.number_of_match//2 + self.number_of_match%2
+                #print(N2,N1,match_arr_0.shape[1]/N2)
+                match_arr_0 = match_arr_0.reshape((2,int(match_arr_0.shape[1]/N2),N2))
+                match_arr_1 = match_arr_1.reshape((2,int(match_arr_1.shape[1]/N1),N1))
+                self.match_arr = (match_arr_0.mean(2)+match_arr_1.mean(2))/2
+                
+            else:
+                self.match_arr = (match_arr_0)
             
 
             if self.jpa_params is not None:

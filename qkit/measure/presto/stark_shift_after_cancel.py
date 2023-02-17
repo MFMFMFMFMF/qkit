@@ -25,20 +25,25 @@ IDX_LOW = 1_500
 IDX_HIGH = 2_000
 
 
-class TwoTonePulsed(Base):
+class StarkShiftCancel(Base):
     def __init__(
         self,dict_param = {}
      ) -> None:
     
         
-        self._default_vals = {
+        self._default_vals = {            
+            'cancel_duration':200e-9,
+            'cancel_amp':0.1,
             'readout_freq' : 6e9,
+            'control_delay':0,
             'control_freq_center' : 2.5e9,
             'control_freq_span' : 0.5e9,
             'control_freq_nr' : 10,
             'num_averages' : 10,
             'readout_amp' : 0.1,
-            'readout_stark_arr':[0.1],
+            'readout_amp_stark' : 0.1,
+            'readout_phase':0,
+            'cancel_phase':0,
             'control_amp':0.1,
             'readout_duration_stark': 600e-9,
             'readout_duration_measure': 600e-9,
@@ -48,6 +53,7 @@ class TwoTonePulsed(Base):
             'control_port':3,
             'readout_port': 1,
             'readout_sample_delay':200e-6,
+            'cancel_delay':200e-6,
             'wait_delay' : 50e-6,
             'drag': 0,
             'experiment_name': "0.h5",
@@ -141,18 +147,18 @@ class TwoTonePulsed(Base):
                 phases=np.full_like(control_if_arr, 0.0),
                 phases_q=np.full_like(control_if_arr, -np.pi / 2),  # HSB
             )
-            scale = self.readout_stark_arr
+            
             # Setup lookup tables for amplitudes
             pls.setup_scale_lut(
                 output_ports=self.readout_port,
                 group=0,
-                scales=scale,
+                scales=self.readout_amp_stark,
             )
             
             pls.setup_scale_lut(
                 output_ports=self.readout_port,
                 group=1,
-                scales=self.readout_amp,
+                scales=[self.cancel_amp,self.readout_amp],
             )
             pls.setup_scale_lut(
                 output_ports=self.control_port,
@@ -168,8 +174,15 @@ class TwoTonePulsed(Base):
                 output_port=self.readout_port,
                 group=1,
                 duration=self.readout_duration_measure,
-                amplitude=1.0,
-                amplitude_q=1.0,
+                amplitude=1.0*np.exp(1j*self.readout_phase) ,
+                rise_time=0e-9,
+                fall_time=0e-9,
+            )  
+            cancel_pulse = pls.setup_long_drive(
+                output_port=self.readout_port,
+                group=1,
+                duration=self.cancel_duration,
+                amplitude=1.0*np.exp(1j*self.cancel_phase) ,
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
@@ -177,8 +190,7 @@ class TwoTonePulsed(Base):
                 output_port=self.readout_port,
                 group=0,
                 duration=self.readout_duration_stark,
-                amplitude=1.0,
-                amplitude_q=1.0,
+                amplitude=1.0*np.exp(1j*self.readout_phase) ,
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
@@ -210,23 +222,30 @@ class TwoTonePulsed(Base):
                 pls.reset_phase(T, self.readout_port,None)
                 pls.output_pulse(T, ringup_pulse)
                 # Readout pulse starts right after control pulse
-                T += self.readout_duration_stark-self.control_duration
+                
+                T += self.cancel_delay
+                pls.output_pulse(T, cancel_pulse)
+                T += self.cancel_duration
+                
+                
+                T += self.control_delay
                 pls.reset_phase(T, self.control_port)
                 pls.output_pulse(T, control_pulse)
                 T += self.control_duration
+                
                 pls.reset_phase(T, self.readout_port)
+                pls.next_scale(T,self.readout_port,1)
                 pls.output_pulse(T, readout_pulse)
                 # Sampling window
                 pls.store(T + self.readout_sample_delay)
                 # Move to next Rabi amplitude
-                T += self.readout_duration_measure
                 pls.next_frequency(
                     T, self.control_port
                 )  # every iteration will have a different frequency
                 # Wait for decay
+                pls.next_scale(T,self.readout_port,1)
                 T += self.wait_delay
-            pls.next_scale(T,self.readout_port,0)
-            T += self.wait_delay
+            
                 
             # **************************
             # *** Run the experiment ***
@@ -235,7 +254,7 @@ class TwoTonePulsed(Base):
             # then average `num_averages` times
             pls.run(
                 period=T,
-                repeat_count= len(self.readout_stark_arr),
+                repeat_count= 1,
                 num_averages=self.num_averages,
                 print_time=True,
             )

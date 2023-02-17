@@ -15,7 +15,7 @@ from presto.hardware import AdcFSample, AdcMode, DacFSample, DacMode
 from presto import pulsed
 from presto.utils import rotate_opt, sin2
 
-from qkit.measure.presto._base import Base 
+from qkit.measure.presto._base import Base
 
 DAC_CURRENT = 32_000  # uA
 config_0 = {
@@ -24,36 +24,51 @@ config_0 = {
     "dac_mode": [2,2,2,2],
     "dac_fsample": [2,2,2,2]}
 
+
 IDX_LOW = 1_500
 IDX_HIGH = 2_000
 
 
-class IQCloud(Base):
+class CancelPulse(Base):
+    '''
+    experiment_simple_pulse = presto_basic_pulse_check.SimplePulse({ 'readout_freq' : 7.325e9,
+                                        'num_averages' : 500000,
+                                        'readout_amp' : 0.02,
+                                        'readout_duration' : 500e-9,
+                                        'sample_duration' : 900e-9,
+                                        'sample_port' : 1,
+                                        'readout_port': 1,
+                                        'readout_sample_delay' : 200e-9,
+                                        'wait_delay' : 50e-6})
+    experiment_simple_pulse.experiment_name = 'filename'
+    save_filename = experiment_simple_pulse.run(presto_address)
+    '''
     def __init__(
         self,dict_param = {}
      ) -> None:
+        
         self._default_vals = {
-            'readout_freq' : 7e9,
-            'control_freq' : 4e9,
-            'readout_amp' : 0.1,
-            'control_amp' : 0.1,
-            'readout_duration' : 500e-9,
-            'control_duration' : 200e-9,
-            'readout_phase' : 0,
-            'match_duration' : 300e-9,
-            'number_of_match': 1,
-            'readout_port' : 1,
-            'control_port' : 3,
+            'readout_freq' : 6e9,
+            'num_averages' : 10,
+            'readout_amp':0.1,
+            'readout_phase':0,
+            'cancel_amp':0.1,
+            'cancel_phase':0,
+            'readout_duration':200e-9,
+            'cancel_duration':200e-9,
+            'sample_duration' : 200e-9,
             'sample_port' : 1,
+            'readout_port': 1,
+            'readout_sample_delay':200e-6,
+            'cancel_delay':200e-6,
             'wait_delay' : 50e-6,
-            
-            'readout_match_delay' :  100e-9,
-            'num_repeat' : 2000,
-            'experiment_name': '0.h5',
-            'drag' : 0,
-            'match_arr' : [None],
+            'drag': 0,
+            'experiment_name': "0.h5",
+            'store_arr':[None],
+            't_arr' : [None],
             'jpa_params' : None}
-            
+        
+        
         for key,value in dict_param.items():
             if key  not in self._default_vals :
                 print(key ,'is unnecessary')
@@ -68,11 +83,8 @@ class IQCloud(Base):
         presto_address: str,
         presto_port: int = None,
         ext_ref_clk: bool = False,
-        print_time: bool = True,
-        print_save : bool = True
     ) -> str:
-    
-        self.settings  = self.get_instr_dict()        
+        self.settings  = self.get_instr_dict()
         CONVERTER_CONFIGURATION = self.create_converter_config(self.converter_config)
         # Instantiate interface class
         with pulsed.Pulsed(
@@ -83,23 +95,13 @@ class IQCloud(Base):
         ) as pls:
             assert pls.hardware is not None
 
-            pls.hardware.set_adc_attenuation(self.sample_port, 20.0)
+            pls.hardware.set_adc_attenuation(self.sample_port, 0.0)
             pls.hardware.set_dac_current(self.readout_port, DAC_CURRENT)
-            pls.hardware.set_dac_current(self.control_port, DAC_CURRENT)
             pls.hardware.set_inv_sinc(self.readout_port, 0)
-            pls.hardware.set_inv_sinc(self.control_port, 0)
-            
             pls.hardware.configure_mixer(
                 freq=self.readout_freq,
                 in_ports=self.sample_port,
                 out_ports=self.readout_port,
-                sync=False,  # sync in next call
-            )
-            
-            pls.hardware.configure_mixer(
-                freq=self.control_freq,
-                out_ports=self.control_port,
-                sync=True,
             )
             if self.jpa_params is not None:
                 pls.hardware.set_lmx(
@@ -123,23 +125,26 @@ class IQCloud(Base):
                 phases_q=0.0,
             )
             pls.setup_freq_lut(
-                output_ports=self.control_port,
-                group=0,
+                output_ports=self.readout_port,
+                group=1,
                 frequencies=0.0,
                 phases=0.0,
                 phases_q=0.0,
             )
+
             # Setup lookup tables for amplitudes
             pls.setup_scale_lut(
                 output_ports=self.readout_port,
                 group=0,
-                scales =self.readout_amp,
+                scales=self.readout_amp,
             )
+            # Setup lookup tables for cancel amplitudes
             pls.setup_scale_lut(
-                output_ports=self.control_port,
-                group=0,
-                scales=self.control_amp,
+                output_ports=self.readout_port,
+                group=1,
+                scales=self.cancel_amp,
             )
+            
 
             # Setup readout and control pulses
             # use setup_long_drive to create a pulse with square envelope
@@ -153,56 +158,31 @@ class IQCloud(Base):
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
-            control_ns = int(
-                round(self.control_duration * pls.get_fs("dac"))
-            )  # number of samples in the control template
-            control_envelope = sin2(control_ns, drag=self.drag)
-            control_pulse = pls.setup_template(
-                output_port=self.control_port,
-                group=0,
-                template=control_envelope,
-                template_q=control_envelope if self.drag == 0.0 else None,
-                envelope=True,
+            
+            cancel_pulse = pls.setup_long_drive(
+                output_port=self.readout_port,
+                group=1,
+                duration=self.cancel_duration,
+                amplitude=1.0*np.exp(1j*self.cancel_phase) ,
+                rise_time=0e-9,
+                fall_time=0e-9,
             )
-          
-            # Setup template matching
-            ns_match = int(round(self.match_duration * pls.get_fs("adc")))
-            templ_i = np.full(ns_match, 1+0j)
-            templ_q = np.full(ns_match, 0+1j)
-            match_i, match_q = pls.setup_template_matching_pair(
-                input_port=self.sample_port,
-                template1=templ_i,
-                template2=templ_q,
-                )
-            dict_pulses = {}
-            dict_pulses[0] = [match_i, match_q]
-            if self.number_of_match>1:
-                match_i_2, match_q_2 = pls.setup_template_matching_pair(
-                    input_port=self.sample_port,
-                    template1=templ_i,
-                    template2=templ_q,
-                    )
-                dict_pulses[1] = [match_i_2, match_q_2]
-                
+
+
+            # Setup sampling window
+            pls.set_store_ports(self.sample_port)
+            pls.set_store_duration(self.sample_duration)
+
             # ******************************
             # *** Program pulse sequence ***
             # ******************************
             T = 0.0  # s, start at time zero ...
             # Readout
-            pls.reset_phase(T, self.control_port)
-            pls.output_pulse(T, control_pulse)
-            T += self.control_duration
-
-            
-            
             pls.reset_phase(T, self.readout_port)
             pls.output_pulse(T, readout_pulse)
+            pls.output_pulse(T+self.cancel_delay, cancel_pulse)
+            pls.store(T + self.readout_sample_delay)
             
-#           pls.store(T + self.readout_sample_delay)
-            for i in range(self.number_of_match):
-                pls.match(T +self.readout_match_delay+ i*self.match_duration, dict_pulses[i%2])
-            
-            T += self.readout_duration
             
             # Wait for decay
             T += self.wait_delay
@@ -229,30 +209,17 @@ class IQCloud(Base):
 
             pls.run(
                 period=T,
-                repeat_count=self.num_repeat,
-                num_averages=1,
-                print_time=print_time,
+                repeat_count=1,
+                num_averages=self.num_averages,
+                print_time=True,
             )
-#           self.t_arr, self.store_arr = pls.get_store_data()
-            match_arr_0 = np.array(pls.get_template_matching_data(dict_pulses[0]))
-            if self.number_of_match>1:
-                match_arr_1 = np.array(pls.get_template_matching_data(dict_pulses[1]))
-                
-                
-                N1 = self.number_of_match//2
-                N2 = self.number_of_match//2 + self.number_of_match%2
-                #print(N2,N1,match_arr_0.shape[1]/N2)
-                match_arr_0 = match_arr_0.reshape((2,int(match_arr_0.shape[1]/N2),N2))
-                match_arr_1 = match_arr_1.reshape((2,int(match_arr_1.shape[1]/N1),N1))
-                self.match_arr = (match_arr_0.mean(2)+match_arr_1.mean(2))/2
-                
-            else:
-                self.match_arr = (match_arr_0)
+            self.t_arr, self.store_arr = pls.get_store_data()
+
             if self.jpa_params is not None:
                 pls.hardware.set_lmx(0.0, 0.0, self.jpa_params["pump_port"])
                 pls.hardware.set_dc_bias(0.0, self.jpa_params["bias_port"])
 
-        return self.save(self.experiment_name,print_save=print_save)
+        return self.save(self.experiment_name)
 
-    def save(self, save_filename: str = None,print_save:bool = True) -> str:
-        return super().save(__file__, save_filename=save_filename,print_save = print_save)
+    def save(self, save_filename: str = None) -> str:
+        return super().save(__file__, save_filename=save_filename)

@@ -83,15 +83,12 @@ class SweepCoil(Base):
             assert lck.hardware is not None
             
             #def ramp_bias(cur):
-            def ramp_bias(biasstart,biasend,t):
-                for v in np.linspace(biasstart,biasend,200):
+            def ramp_bias(bias,t):
+                starting_bias = lck.hardware.get_dc_bias(self.bias_port)
+                for v in np.linspace(starting_bias,bias,200):
                     lck.hardware.set_dc_bias(v, self.bias_port)
                     time.sleep(t/200)
-            ramp_bias(0,self.bias_arr[0],6)
-            lck.hardware.set_dc_bias(self.bias_arr[0], self.bias_port)
-            lck.hardware.sleep(1.0, False)
-
-
+            ramp_bias(self.bias_arr[0],5)
                     
             lck.hardware.set_adc_attenuation(self.input_port, 20.0)
             lck.hardware.set_dac_current(self.output_port, DAC_CURRENT)
@@ -133,7 +130,7 @@ class SweepCoil(Base):
             t0 = time.time()
             for jj in range(n_coil):
                 if jj>0:
-                    ramp_bias(self.bias_arr[jj-1],self.bias_arr[jj],1)
+                    ramp_bias(self.bias_arr[jj],0.5)
                 
                 lck.hardware.sleep(0.3, False)
                 dt = time.time() - t0

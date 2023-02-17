@@ -22,7 +22,7 @@ class Base:
     
     def save(self, script_path: str, save_filename: Optional[str] = None,print_save:bool = True) -> str:
         script_path = os.path.realpath(script_path)  # full path of current script
-
+        time_str = time.ctime(time.time())
         if ( 'qkit' in globals()):
             if ('cfg' in qkit.__dict__):
                 datafolder = qkit.cfg['datadir']+'\\'+qkit.cfg['run_id']+'\\'+qkit.cfg['user']+'\\'
@@ -54,6 +54,7 @@ class Base:
         with h5py.File(save_path, "w") as h5f:
             dt = h5py.string_dtype(encoding="utf-8")
             ds = h5f.create_dataset("source_code", (len(source_code),), dt)
+            h5f.attrs['time'] = time_str
             for ii, line in enumerate(source_code):
                 ds[ii] = line
 
@@ -112,11 +113,10 @@ class Base:
                 if isinstance(val,( np.ndarray,list)):
                     setattr(self, key, dict_h5[key][()])
                 elif key == "jpa_params":
-                    
                     setattr(self, key, ast.literal_eval(dict_h5_attrs.get(key, self._default_vals[key])))
                 else:
                     setattr(self, key, dict_h5_attrs.get(key, self._default_vals[key]))
-            if "settings" in dict(h5f.items()):
+            if "settings" in dict_h5:
                 if h5f["settings"] == None:
                         pass
                 else:
@@ -130,7 +130,7 @@ class Base:
                                 dict_instr[key_] = val_
                         dict_settings[key] = dict_instr
                     setattr(self, "settings",dict_settings)
-            if "converter_config" in dict(h5f.items()):
+            if "converter_config" in dict_h5:
                 if h5f["converter_config"] == None:
                         pass
                 else:
@@ -138,6 +138,8 @@ class Base:
                     for key in list(h5f["converter_config"].keys()):
                         converter_settings[key] = h5f["converter_config"][key][:]
                     setattr(self, "converter_config",converter_settings)
+            if "time" in dict_h5_attrs:
+                setattr(self, "time", dict_h5_attrs["time"])
         return self
 
     def get_instr_dict(self):

@@ -41,7 +41,6 @@ class Ramsey(Base):
             'readout_freq':6e9,
             'control_freq' : 4e9,
             'readout_amp' : 0.1,
-            'readout_phase':0,
             'control_amp':0.5,
             'readout_duration' : 500e-9,
             'control_duration':200e-9,
@@ -52,7 +51,7 @@ class Ramsey(Base):
             'control_port':3,
             'sample_port':1,
             'wait_delay': 60e-6,
-            'readout_match_delay':100e-9,
+            'readout_sample_delay':100e-9,
             'num_averages':100,
             'jpa_params':None,
             'drag':0.0,
@@ -155,7 +154,8 @@ class Ramsey(Base):
                 output_port=self.readout_port,
                 group=0,
                 duration=self.readout_duration,
-                amplitude=1.0*np.exp(1j*self.readout_phase) ,
+                amplitude=1.0,
+                amplitude_q=1.0,
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
@@ -180,44 +180,41 @@ class Ramsey(Base):
                 template2=templ_q,
                 )
             dict_pulses = {}
-            dict_pulses[0] = [match_i, match_q]
             if self.number_of_match>1:
-                match_i_2, match_q_2 = pls.setup_template_matching_pair(
-                    input_port=self.sample_port,
-                    template1=templ_i,
-                    template2=templ_q,
-                    )
-                dict_pulses[1] = [match_i_2, match_q_2]
+                for i in range(self.number_of_match-1):
+                    dict_pulses[i] = pls.setup_template_matching_pair(
+                        input_port=self.sample_port,
+                        template1=templ_i,
+                        template2=templ_q,
+                        )
             
             
 
             # ******************************
             # *** Program pulse sequence ***
             # ******************************
-            T = 0.0  # s, start at time zero ...
-            for delay in self.delay_arr:
-                pls.reset_phase(T, self.readout_port)
-                #pls.output_pulse(T, readout_pulse)
-                #pls.store(T + self.readout_sample_delay)
-                #for i in range(self.number_of_match):
-                #    pls.match(T +self.readout_match_delay+ i*self.match_duration, dict_pulses[i%2])
-                # first pi/2 pulse
-                pls.reset_phase(T, self.control_port)
-                pls.output_pulse(T, control_pulse)
-                T += self.control_duration
-                # wait 
-                T += delay 
-                # second pi/2 pulse
-                pls.output_pulse(T, control_pulse)
-                T += self.control_duration
-                # Readout
-                pls.reset_phase(T, self.readout_port)
-                pls.output_pulse(T, readout_pulse)
-                
-                for i in range(self.number_of_match):
-                    pls.match(T +self.readout_match_delay+ i*self.match_duration, dict_pulses[i%2])
-                # Wait for decay
-                T += self.wait_delay
+            T = 0.0  # s, start at time zero ...´
+            
+            # first pi/2 pulse
+            pls.reset_phase(T, self.control_port)
+            pls.output_pulse(T, control_pulse)
+            T += self.control_duration
+            # wait 
+            T += delay 
+            # second pi/2 pulse
+            pls.output_pulse(T, control_pulse)
+            T += self.control_duration
+            # Readout
+            pls.reset_phase(T, self.readout_port)
+            pls.output_pulse(T, readout_pulse)
+            #pls.store(T + self.readout_sample_delay)
+            pls.match(T + self.match_duration, [match_i, match_q])
+            if self.number_of_match>1:
+                for i in range(self.number_of_match-1):
+                    pls.match(T + 2*self.match_duration, dict_pulses[i])
+            T += self.readout_duration
+            # Wait for decay
+            T += self.wait_delay
 
             if self.jpa_params is not None:
                 # adjust period to minimize effect of JPA idler
@@ -242,26 +239,20 @@ class Ramsey(Base):
                 num_averages=self.num_averages,
                 print_time=print_time,
             )
-            match_arr_0 = np.array(pls.get_template_matching_data(dict_pulses[0]))
+            self.match_arr = np.array(pls.get_template_matching_data([match_i, match_q]))
             if self.number_of_match>1:
-                match_arr_1 = np.array(pls.get_template_matching_data(dict_pulses[1]))
-                
-                
-                N1 = self.number_of_match//2
-                N2 = self.number_of_match//2 + self.number_of_match%2
-                #print(N2,N1,match_arr_0.shape[1]/N2)
-                match_arr_0 = match_arr_0.reshape((2,int(match_arr_0.shape[1]/N2),N2))
-                match_arr_1 = match_arr_1.reshape((2,int(match_arr_1.shape[1]/N1),N1))
-                self.match_arr = (match_arr_0.mean(2)+match_arr_1.mean(2))/2
-                
-            else:
-                self.match_arr = (match_arr_0)
+                for i in range(self.number_of_match-1):
+                    temp = np.array(pls.get_template_matching_data(dict_pulses[i]))
+                    
+                    self.match_arr += temp
+                self.match_arr = np.array(self.match_arr)/self.number_of_match
+            
 
             if self.jpa_params is not None:
                 pls.hardware.set_lmx(0.0, 0.0, self.jpa_params["pump_port"])
                 pls.hardware.set_dc_bias(0.0, self.jpa_params["bias_port"])
-        if save:
-            return self.save(self.experiment_name,print_save=print_save)
+
+        return self.save(self.experiment_name,print_save=print_save)
 
     def save(self, save_filename: str = None,print_save:bool = True) -> str:
         return super().save(__file__, save_filename=save_filename,print_save = print_save)
