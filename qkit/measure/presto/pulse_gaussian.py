@@ -29,7 +29,7 @@ IDX_LOW = 1_500
 IDX_HIGH = 2_000
 
 
-class CancelPulse(Base):
+class Pulse(Base):
     '''
     experiment_simple_pulse = presto_basic_pulse_check.SimplePulse({ 'readout_freq' : 7.325e9,
                                         'num_averages' : 500000,
@@ -50,17 +50,13 @@ class CancelPulse(Base):
         self._default_vals = {
             'readout_freq' : 6e9,
             'num_averages' : 10,
+            'readout_envelope':[0.1],
             'readout_amp':0.1,
-            'readout_phase':0,
-            'cancel_amp':0.1,
-            'cancel_phase':0,
             'readout_duration':200e-9,
-            'cancel_duration':200e-9,
             'sample_duration' : 200e-9,
             'sample_port' : 1,
             'readout_port': 1,
             'readout_sample_delay':200e-6,
-            'cancel_delay':200e-6,
             'wait_delay' : 50e-6,
             'drag': 0,
             'experiment_name': "0.h5",
@@ -95,13 +91,14 @@ class CancelPulse(Base):
         ) as pls:
             assert pls.hardware is not None
 
-            pls.hardware.set_adc_attenuation(self.sample_port, 0.0)
+            pls.hardware.set_adc_attenuation(self.sample_port, 25.0)
             pls.hardware.set_dac_current(self.readout_port, DAC_CURRENT)
             pls.hardware.set_inv_sinc(self.readout_port, 0)
             pls.hardware.configure_mixer(
                 freq=self.readout_freq,
                 in_ports=self.sample_port,
                 out_ports=self.readout_port,
+                #sync=False,  # sync in next call
             )
             if self.jpa_params is not None:
                 pls.hardware.set_lmx(
@@ -124,13 +121,6 @@ class CancelPulse(Base):
                 phases=0.0,
                 phases_q=0.0,
             )
-            pls.setup_freq_lut(
-                output_ports=self.readout_port,
-                group=1,
-                frequencies=0.0,
-                phases=0.0,
-                phases_q=0.0,
-            )
 
             # Setup lookup tables for amplitudes
             pls.setup_scale_lut(
@@ -138,36 +128,32 @@ class CancelPulse(Base):
                 group=0,
                 scales=self.readout_amp,
             )
-            # Setup lookup tables for cancel amplitudes
-            pls.setup_scale_lut(
-                output_ports=self.readout_port,
-                group=1,
-                scales=self.cancel_amp,
-            )
             
 
             # Setup readout and control pulses
             # use setup_long_drive to create a pulse with square envelope
             # setup_long_drive supports smooth rise and fall transitions for the pulse,
             # but we keep it simple here
-            readout_pulse = pls.setup_long_drive(
+            # readout_pulse = pls.setup_long_drive(
+                # output_port=self.readout_port,
+                # group=0,
+                # duration=self.readout_duration,
+                # amplitude=1.0,
+                # amplitude_q=1.0,
+                # rise_time=0e-9,
+                # fall_time=0e-9,
+            # )
+            readout_ns = int(
+                round(self.readout_duration * pls.get_fs("dac"))
+            )  # number of samples in the control template
+            readout_envelope = sin2(readout_ns, drag=self.drag)
+            readout_pulse = pls.setup_template(
                 output_port=self.readout_port,
                 group=0,
-                duration=self.readout_duration,
-                amplitude=1.0*np.exp(1j*self.readout_phase) ,
-                rise_time=0e-9,
-                fall_time=0e-9,
+                template= np.real(self.readout_envelope),
+                template_q = np.imag(self.readout_envelope) if self.drag == 0.0 else None,
+                envelope=True,
             )
-            
-            cancel_pulse = pls.setup_long_drive(
-                output_port=self.readout_port,
-                group=1,
-                duration=self.cancel_duration,
-                amplitude=1.0*np.exp(1j*self.cancel_phase) ,
-                rise_time=0e-9,
-                fall_time=0e-9,
-            )
-
 
             # Setup sampling window
             pls.set_store_ports(self.sample_port)
@@ -180,10 +166,8 @@ class CancelPulse(Base):
             # Readout
             pls.reset_phase(T, self.readout_port)
             pls.output_pulse(T, readout_pulse)
-            pls.output_pulse(T+self.cancel_delay, cancel_pulse)
             pls.store(T + self.readout_sample_delay)
-            
-            
+            T += self.readout_duration
             # Wait for decay
             T += self.wait_delay
 

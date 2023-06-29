@@ -15,7 +15,7 @@ from presto.hardware import AdcFSample, AdcMode, DacFSample, DacMode
 from presto import pulsed
 from presto.utils import rotate_opt, sin2
 
-from qkit.measure.presto._base import Base
+from qkit.measure.presto._base import Base 
 
 DAC_CURRENT = 32_000  # uA
 config_0 = {
@@ -28,26 +28,30 @@ IDX_LOW = 1_500
 IDX_HIGH = 2_000
 
 
-class RabiCloud(Base):
+class IQCloud(Base):
     def __init__(
         self,dict_param = {}
      ) -> None:
         self._default_vals = {
             'readout_freq' : 7e9,
             'control_freq' : 4e9,
+            'control_freq2' : 4e9,
             'readout_amp' : 0.1,
-            'control_amp_arr' : [0.1],
+            'control_amp' : 0.1,
+            'control_amp2' : 0.1,
             'readout_duration' : 500e-9,
-            'readout_phase' : 0,
             'control_duration' : 200e-9,
+            'control_duration2' : 200e-9,
+            'readout_phase' : 0,
             'match_duration' : 300e-9,
             'number_of_match': 1,
             'readout_port' : 1,
             'control_port' : 3,
             'sample_port' : 1,
             'wait_delay' : 50e-6,
+            
             'readout_match_delay' :  100e-9,
-            'num_average' : 2000,
+            'num_repeat' : 2000,
             'experiment_name': '0.h5',
             'drag' : 0,
             'match_arr' : [None],
@@ -56,12 +60,10 @@ class RabiCloud(Base):
         for key,value in dict_param.items():
             if key  not in self._default_vals :
                 print(key ,'is unnecessary')
-        # for key,value in self._default_vals.items():
-            # if key not in dict_param :
-                # print(key ,'is missing')
-                
+        
         for key, value in self._default_vals.items():
             setattr(self, key, dict_param.get(key, value))
+        
         self.converter_config = config_0
 
     def run(
@@ -70,8 +72,10 @@ class RabiCloud(Base):
         presto_port: int = None,
         ext_ref_clk: bool = False,
         print_time: bool = True,
+        print_save : bool = True
     ) -> str:
-        self.settings  = self.get_instr_dict()
+    
+        self.settings  = self.get_instr_dict()        
         CONVERTER_CONFIGURATION = self.create_converter_config(self.converter_config)
         # Instantiate interface class
         with pulsed.Pulsed(
@@ -81,6 +85,15 @@ class RabiCloud(Base):
             **CONVERTER_CONFIGURATION,
         ) as pls:
             assert pls.hardware is not None
+            control_freq_span = self.control_freq-self.control_freq2
+            assert control_freq_span < pls.get_fs("dac") / 2  # fits in HSB
+            control_if_center = pls.get_fs("dac") / 4  # middle of HSB
+            control_if_start = control_if_center - control_freq_span / 2
+            control_if_stop = control_if_center + control_freq_span / 2
+            control_if_arr = np.array([control_if_start, control_if_stop])
+            control_nco = (self.control_freq+self.control_freq2)/2 - control_if_center
+            self.control_freq_arr = control_nco + control_if_arr
+
 
             pls.hardware.set_adc_attenuation(self.sample_port, 20.0)
             pls.hardware.set_dac_current(self.readout_port, DAC_CURRENT)
@@ -96,18 +109,11 @@ class RabiCloud(Base):
             )
             
             pls.hardware.configure_mixer(
-                freq=self.control_freq,
+                freq=control_nco,
                 out_ports=self.control_port,
-                sync=True,
+                sync=True,  # sync here
             )
-            if self.jpa_params is not None:
-                pls.hardware.set_lmx(
-                    self.jpa_params["pump_freq"],
-                    self.jpa_params["pump_pwr"],
-                    self.jpa_params["pump_port"],
-                )
-                pls.hardware.set_dc_bias(self.jpa_params["bias"], self.jpa_params["bias_port"])
-                pls.hardware.sleep(1.0, False)
+
 
             # ************************************
             # *** Setup measurement parameters ***
@@ -121,13 +127,15 @@ class RabiCloud(Base):
                 phases=0.0,
                 phases_q=0.0,
             )
+            
             pls.setup_freq_lut(
                 output_ports=self.control_port,
                 group=0,
-                frequencies=0.0,
-                phases=0.0,
-                phases_q=0.0,
+                frequencies=control_if_arr,
+                phases=np.full_like(control_if_arr, 0.0),
+                phases_q=np.full_like(control_if_arr, -np.pi / 2),  # HSB
             )
+            
             # Setup lookup tables for amplitudes
             pls.setup_scale_lut(
                 output_ports=self.readout_port,
@@ -137,8 +145,9 @@ class RabiCloud(Base):
             pls.setup_scale_lut(
                 output_ports=self.control_port,
                 group=0,
-                scales=self.control_amp_arr,
+                scales=[self.control_amp2,self.control_amp],
             )
+
 
             # Setup readout and control pulses
             # use setup_long_drive to create a pulse with square envelope
@@ -149,7 +158,6 @@ class RabiCloud(Base):
                 group=0,
                 duration=self.readout_duration,
                 amplitude=1.0*np.exp(1j*self.readout_phase) ,
-                #amplitude_q = np.imag( ),
                 rise_time=0e-9,
                 fall_time=0e-9,
             )
@@ -164,12 +172,22 @@ class RabiCloud(Base):
                 template_q=control_envelope if self.drag == 0.0 else None,
                 envelope=True,
             )
+            control_ns2 = int(
+                round(self.control_duration2 * pls.get_fs("dac"))
+            )  # number of samples in the control template
+            control_envelope2 = sin2(control_ns2, drag=self.drag)
+            control_pulse2 = pls.setup_template(
+                output_port=self.control_port,
+                group=0,
+                template=control_envelope2,
+                template_q=control_envelope2 if self.drag == 0.0 else None,
+                envelope=True,
+            )
           
             # Setup template matching
             ns_match = int(round(self.match_duration * pls.get_fs("adc")))
             templ_i = np.full(ns_match, 1+0j)
             templ_q = np.full(ns_match, 0+1j)
-            
             match_i, match_q = pls.setup_template_matching_pair(
                 input_port=self.sample_port,
                 template1=templ_i,
@@ -184,29 +202,41 @@ class RabiCloud(Base):
                     template2=templ_q,
                     )
                 dict_pulses[1] = [match_i_2, match_q_2]
-            
-            
+                
             # ******************************
             # *** Program pulse sequence ***
             # ******************************
             T = 0.0  # s, start at time zero ...
-            # control pulse
+            # Readout
             pls.reset_phase(T, self.control_port)
             pls.output_pulse(T, control_pulse)
             T += self.control_duration
-            # Readout
-          
+            pls.next_frequency(
+                T, self.control_port
+            ) 
+            pls.next_scale(
+                T, self.control_port
+            ) 
+            pls.output_pulse(T, control_pulse2)
+            T += self.control_duration2
+            pls.next_frequency(
+                T, self.control_port
+            ) 
+            pls.next_scale(
+                T, self.control_port
+            ) 
+            
             pls.reset_phase(T, self.readout_port)
             pls.output_pulse(T, readout_pulse)
+            
             for i in range(self.number_of_match):
-                pls.match(T + self.readout_match_delay+i*self.match_duration, dict_pulses[i%2])
+                pls.match(T +self.readout_match_delay+ i*self.match_duration, dict_pulses[i%2])
             
             T += self.number_of_match*self.readout_duration
-            pls.next_scale(T, self.control_port ) 
             
             # Wait for decay
             T += self.wait_delay
-            
+
             if self.jpa_params is not None:
                 # adjust period to minimize effect of JPA idler
                 idler_freq = self.jpa_params["pump_freq"] - self.readout_freq
@@ -229,11 +259,11 @@ class RabiCloud(Base):
 
             pls.run(
                 period=T,
-                repeat_count=len(self.control_amp_arr),
-                num_averages=self.num_average,
+                repeat_count=self.num_repeat,
+                num_averages=1,
                 print_time=print_time,
             )
-#             self.t_arr, self.store_arr = pls.get_store_data()
+#           self.t_arr, self.store_arr = pls.get_store_data()
             match_arr_0 = np.array(pls.get_template_matching_data(dict_pulses[0]))
             if self.number_of_match>1:
                 match_arr_1 = np.array(pls.get_template_matching_data(dict_pulses[1]))
@@ -248,13 +278,11 @@ class RabiCloud(Base):
                 
             else:
                 self.match_arr = (match_arr_0)
-            
-
             if self.jpa_params is not None:
                 pls.hardware.set_lmx(0.0, 0.0, self.jpa_params["pump_port"])
                 pls.hardware.set_dc_bias(0.0, self.jpa_params["bias_port"])
 
-        return self.save(self.experiment_name)
+        return self.save(self.experiment_name,print_save=print_save)
 
-    def save(self, save_filename: str = None) -> str:
-        return super().save(__file__, save_filename=save_filename)
+    def save(self, save_filename: str = None,print_save:bool = True) -> str:
+        return super().save(__file__, save_filename=save_filename,print_save = print_save)

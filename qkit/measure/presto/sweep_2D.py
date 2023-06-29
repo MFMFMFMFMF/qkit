@@ -10,6 +10,7 @@ from presto import lockin
 from presto.utils import ProgressBar
 import time
 from qkit.measure.presto._base import Base
+from matplotlib import *
 
 DAC_CURRENT = 32_000  # uA
 config_0 = {
@@ -18,27 +19,16 @@ config_0 = {
     "dac_mode": [2,2,2,2],
     "dac_fsample": [2,2,2,2]}
 
-class SweepCoil(Base):
+
+
+class Sweep2D(Base):
     '''
-    ###### Define the experiment as such :
-    experiment = presto_sweep_coil.SweepCoil({  'input_port' : 1,
-                            'output_port' : 1,
-                            'df' : 0.5e6,
-                            'freq_center' : 7.32e9,
-                            'freq_span' : 0.04e9,
-                            'amp' : 0.03,
-                            'dither' : True,
-                            'num_skip' : 0 ,
-                            'num_averages' : 400,
-                            'bias_port' : 1,
-                            'bias_arr': linspace(5,9,200)}
-                            )
-    #####  Define the data folder and launch it using : 
-    experiment.experiment_name = './data_09_01_2023/D7Qubit_sweep_coil2.h5'
-    save_filename = experiment.run(presto_address)
+    
+    
     '''
     def __init__(
-        self,dict_param = {}
+        self,dict_param = {},
+        qubit_bias_function: int = 0
      ) -> None:
     
         self._default_vals = {
@@ -48,18 +38,20 @@ class SweepCoil(Base):
             'num_averages' : 10,
             'amp' : 0.1,
             'bias_arr':[0],
-            'bias_port':1,
             'output_port' : 1,
             'input_port': 1,
             'dither': True,
             'num_skip': 0,
             'experiment_name': "0.h5",
             'freq_arr': [None],
-            'resp_arr':[None]}
+            'resp_arr':[None],
+            '_2D_function': 0}
+            
+            
         for key,value in dict_param.items():
             if key  not in self._default_vals :
                 print(key ,'is unnecessary')
-        
+            
         for key, value in self._default_vals.items():
             setattr(self, key, dict_param.get(key, value))
         
@@ -70,7 +62,6 @@ class SweepCoil(Base):
         presto_address: str,
         presto_port: int = None,
         ext_ref_clk: bool = False,
-        print_save:bool = True
     ) -> str:
         self.settings  = self.get_instr_dict()
         CONVERTER_CONFIGURATION = self.create_converter_config(self.converter_config)
@@ -84,7 +75,10 @@ class SweepCoil(Base):
             assert lck.hardware is not None
             
 
-            lck.hardware.ramp_dc_bias(self.bias_arr[0],self.bias_port,3e-1,range)
+            self._2D_function(self.bias_arr[0])
+            lck.hardware.sleep(1.0, False)
+
+
                     
             lck.hardware.set_adc_attenuation(self.input_port, 20.0)
             lck.hardware.set_dac_current(self.output_port, DAC_CURRENT)
@@ -99,7 +93,6 @@ class SweepCoil(Base):
             n_arr = np.arange(n_start, n_stop + 1)
             nr_freq = len(n_arr)
             n_coil = len(self.bias_arr)
-            print(n_coil)
             self.freq_arr = self.df * n_arr
             self.resp_arr = np.zeros((n_coil,nr_freq), np.complex128)
 
@@ -126,9 +119,9 @@ class SweepCoil(Base):
             t0 = time.time()
             for jj in range(n_coil):
                 if jj>0:
-                    lck.hardware.ramp_dc_bias(self.bias_arr[jj],self.bias_port,3e-1)
+                    self._2D_function(self.bias_arr[jj])
                 
-                lck.hardware.sleep(0.3, False)
+                lck.hardware.sleep(0.2, False)
                 dt = time.time() - t0
                 print(f"\r dc bias {round(self.bias_arr[jj],3)} V, iteration {jj+1} over {n_coil} / should end in {round((dt*(n_coil-jj)/(jj+1))/60,3)} min ", end="")
                 
@@ -157,7 +150,19 @@ class SweepCoil(Base):
             og.set_amplitudes(0.0)
             lck.apply_settings()
 
-        return self.save(self.experiment_name,print_save=print_save)
+        return self.save(self.experiment_name)
 
-    def save(self, save_filename: str = None,print_save:bool = True) -> str:
-        return super().save(__file__, save_filename=save_filename,print_save = print_save)
+    def save(self, save_filename: str = None) -> str:
+        return super().save(__file__, save_filename=save_filename)
+
+
+    def plot_load(self,name,ax,phaseroll = 700,units = 'mA',dbias = 1e-3):
+        expe = self.load(name)
+        out  = expe.resp_arr
+        freq = expe.freq_arr/1e9
+        out  = (np.angle(((out)/expe.amp)*np.exp(1j*freq*phaseroll)))
+        #out = (out.T -out.T[0]).T
+        bias = expe.bias_arr/dbias
+        ax.pcolormesh(bias,freq,out.T,shading = 'nearest')
+        ax.set_xlabel(f'bias ({units})')
+        ax.set_ylabel('freq (GHz)')

@@ -51,6 +51,8 @@ class Base:
         source_code = get_sourcecode(
             script_path
         )  # save also the sourcecode of the script for future reference
+        
+        
         with h5py.File(save_path, "w") as h5f:
             dt = h5py.string_dtype(encoding="utf-8")
             ds = h5f.create_dataset("source_code", (len(source_code),), dt)
@@ -177,6 +179,40 @@ class Base:
 
         return CONVERTER_CONFIGURATION
         
+    
+    def config_from_freq(self,freq):
+        dacs = ['G2','G4','G6','G6_4','G8','G10']
+        fs = np.array([2_000,4_000,6_000,6_400,8_000,10_000])
+        nyq = fs/2
+        modes = ['Direct','Mixed02','Mixed04','Mixed42']
+        def test(nyq,mode,freq):
+            if mode == 'Mixed02':
+                if 0.9*nyq<freq< 1.1 * nyq or freq>1.9*nyq:
+                    return False
+                else:
+                    return True
+            elif mode == 'Mixed04':
+                if 0.4*nyq<freq< 1.6 * nyq or freq>1.9*nyq:
+                    
+                    return False
+                else:
+                    return True
+            elif mode == 'Mixed42':
+                if (freq < 0.6 * nyq
+                    or 0.9 * nyq < freq < 1.1 * nyq
+                    or freq > 1.4 * nyq
+                    ):
+                    return False
+                else:
+                    return True
+            else:
+                return False
+        def func(freq):
+            for i in [0,1,2,4,5]:
+                for j in [0,1,2]:
+                    if test(float(fs[i]),modes[j],freq):
+                        return i,j,dacs[i],modes[j]
+        return func(freq/1e6)
         
         
 def project(resp_arr, reference_templates):

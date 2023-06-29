@@ -83,7 +83,7 @@ class IQCloud(Base):
         ) as pls:
             assert pls.hardware is not None
 
-            pls.hardware.set_adc_attenuation(self.sample_port, 20.0)
+            pls.hardware.set_adc_attenuation(self.sample_port, 18.0)
             pls.hardware.set_dac_current(self.readout_port, DAC_CURRENT)
             pls.hardware.set_dac_current(self.control_port, DAC_CURRENT)
             pls.hardware.set_inv_sinc(self.readout_port, 0)
@@ -198,11 +198,10 @@ class IQCloud(Base):
             pls.reset_phase(T, self.readout_port)
             pls.output_pulse(T, readout_pulse)
             
-#           pls.store(T + self.readout_sample_delay)
             for i in range(self.number_of_match):
                 pls.match(T +self.readout_match_delay+ i*self.match_duration, dict_pulses[i%2])
             
-            T += self.readout_duration
+            T += self.number_of_match*self.readout_duration
             
             # Wait for decay
             T += self.wait_delay

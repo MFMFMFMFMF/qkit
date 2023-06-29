@@ -86,6 +86,7 @@ class TwoToneBiasSweep(Base):
             address=presto_address,
             port=presto_port,
             ext_ref_clk=ext_ref_clk,
+            force_config = True,
             **CONVERTER_CONFIGURATION,
         ) as lck:
             assert lck.hardware is not None
